@@ -46,10 +46,6 @@ import json, sys, os, uuid, time
 CONFIG = sys.argv[1]
 args = sys.argv[2:]
 
-def load():
-    with open(CONFIG) as f:
-        return json.load(f)
-
 def save(data):
     tmp = CONFIG + ".tmp"
     with open(tmp, "w") as f:
@@ -59,6 +55,39 @@ def save(data):
 def iso_now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+def compute_next_run(last_run, interval_days):
+    try:
+        interval_days = int(interval_days)
+    except Exception:
+        interval_days = 0
+    interval_seconds = max(0, interval_days * 86400)
+    base = time.time()
+    if last_run:
+        try:
+            base = time.mktime(time.strptime(last_run, "%Y-%m-%dT%H:%M:%SZ"))
+        except Exception:
+            base = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(base + interval_seconds))
+
+def normalize(data):
+    changed = False
+    routines = data.get("routines", [])
+    for r in routines:
+        if "enabled" not in r:
+            r["enabled"] = True
+            changed = True
+        if not r.get("next_run"):
+            r["next_run"] = compute_next_run(r.get("last_run"), r.get("interval_days"))
+            changed = True
+    if changed:
+        save(data)
+    return data
+
+def load():
+    with open(CONFIG) as f:
+        data = json.load(f)
+    return normalize(data)
+
 def add(path, interval_days):
     data = load()
     rid = "rt-" + uuid.uuid4().hex[:8]
@@ -67,6 +96,7 @@ def add(path, interval_days):
         "path": os.path.abspath(path),
         "interval_days": int(interval_days),
         "last_run": None,
+        "next_run": compute_next_run(None, interval_days),
         "enabled": True
     })
     save(data)
@@ -100,6 +130,7 @@ def update(rid, path, interval_days):
                 r["path"] = os.path.abspath(path)
             if interval_days:
                 r["interval_days"] = int(interval_days)
+            r["next_run"] = compute_next_run(r.get("last_run"), r["interval_days"])
             found = True
             break
     if not found:
@@ -111,7 +142,9 @@ def touch_run(rid):
     found = False
     for r in data["routines"]:
         if r["id"] == rid:
-            r["last_run"] = iso_now()
+            now = iso_now()
+            r["last_run"] = now
+            r["next_run"] = compute_next_run(now, r["interval_days"])
             found = True
             break
     if not found:

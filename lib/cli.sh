@@ -14,6 +14,7 @@ mc_pretty_routines() {
   local routines_json="$1"
 /usr/bin/env python3 - "$routines_json" <<'PY'
 import json, time, sys, os
+
 raw = sys.argv[1]
 if not raw.strip():
     print("No routines.")
@@ -30,17 +31,61 @@ if os.environ.get("MC_DEBUG"):
 if not routines:
     print("No routines.")
     sys.exit(0)
-def next_run(last_run, interval_days):
-    if not last_run:
-        return "scheduled"
+
+def parse_iso(ts):
+    return time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+
+def compute_next_ts(r):
     try:
-        ts = time.strptime(last_run, "%Y-%m-%dT%H:%M:%SZ")
-        nxt = time.mktime(ts) + interval_days * 86400
-        return time.strftime("%Y-%m-%d", time.gmtime(nxt))
+        interval = int(r.get("interval_days", 0)) * 86400
     except Exception:
-        return "?"
+        return None
+    base = time.time()
+    last_run = r.get("last_run")
+    if last_run:
+        try:
+            base = parse_iso(last_run)
+        except Exception:
+            base = time.time()
+    return base + interval
+
+def format_eta(target_ts):
+    if target_ts is None:
+        return ""
+    delta = int(target_ts - time.time())
+    if abs(delta) < 1:
+        return "now"
+    sign = "in" if delta >= 0 else "ago"
+    delta = abs(delta)
+    days, rem = divmod(delta, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    if mins or hours or days:
+        parts.append(f"{mins}m")
+    parts.append(f"{secs}s")
+    return f"{sign} {' '.join(parts)}"
+
+def format_next(r):
+    nxt = r.get("next_run")
+    target_ts = None
+    if nxt:
+        try:
+            target_ts = parse_iso(nxt)
+        except Exception:
+            target_ts = None
+    if target_ts is None:
+        target_ts = compute_next_ts(r)
+        nxt = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(target_ts)) if target_ts else "?"
+    eta = format_eta(target_ts) if target_ts is not None else ""
+    return f"{nxt}{(' (' + eta + ')') if eta else ''}"
+
 for r in routines:
-    print(f"- {r['id']} | {r['path']} | every {r['interval_days']}d | last: {r.get('last_run') or 'never'} | next: {next_run(r.get('last_run'), r['interval_days'])}")
+    print(f"- {r['id']} | {r['path']} | every {r['interval_days']}d | last: {r.get('last_run') or 'never'} | next: {format_next(r)}")
 PY
 }
 

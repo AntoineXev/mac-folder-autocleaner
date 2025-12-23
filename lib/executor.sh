@@ -4,10 +4,21 @@ set -euo pipefail
 
 mc_parse_field() {
   local json="$1" key="$2"
-  echo "$json" | /usr/bin/env python3 - "$key" <<'PY'
-import json, sys
+  /usr/bin/env python3 -c "$(cat <<'PY'
+import json, sys, os
+
 key = sys.argv[1]
-data = json.loads(sys.stdin.read())
+raw = sys.stdin.read()
+if not raw.strip():
+    if os.environ.get("MC_DEBUG"):
+        print("[debug] mc_parse_field: empty input", file=sys.stderr)
+    sys.exit(0)
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as e:
+    if os.environ.get("MC_DEBUG"):
+        print(f"[debug] mc_parse_field: decode error: {e} raw={raw!r}", file=sys.stderr)
+    sys.exit(0)
 val = data.get(key)
 if isinstance(val, bool):
     print("true" if val else "false")
@@ -16,6 +27,7 @@ elif val is None:
 else:
     print(val)
 PY
+)" "$key" <<<"$json"
 }
 
 mc_is_safe_path() {
@@ -32,6 +44,10 @@ mc_clean_directory() {
   local path interval
   path=$(mc_parse_field "$routine_json" path)
   interval=$(mc_parse_field "$routine_json" interval_days)
+  if [[ -z "$path" || -z "$interval" ]]; then
+    mc_error "Routine $id has an invalid config (empty path or interval)."
+    return 1
+  fi
 
   local log_file; log_file="$(mc_logs_dir)/$id.run.log"
   mkdir -p "$(dirname "$log_file")"
@@ -62,8 +78,17 @@ mc_clean_directory() {
   } | tee -a "$log_file"
 
   if [[ "$dry" != "true" ]]; then
+    local updated="" next_run=""
     mc_mark_run "$id"
-    mc_success "Cleanup OK for $path (every ${interval}d)"
+    updated=$(mc_get_routine "$id") || true
+    if [[ -n "$updated" ]]; then
+      next_run=$(mc_parse_field "$updated" next_run)
+    fi
+    if [[ -n "$next_run" ]]; then
+      mc_success "Cleanup OK for $path (every ${interval}d). Next: $next_run"
+    else
+      mc_success "Cleanup OK for $path (every ${interval}d)"
+    fi
   else
     mc_info "Dry-run done for $path"
   fi
